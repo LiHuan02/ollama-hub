@@ -199,6 +199,26 @@ details.raw pre{margin-top:8px;font-size:12px;color:var(--muted);max-height:260p
 .help ul{margin:6px 0 6px 20px;color:var(--muted);font-size:13.5px}
 .help li{margin:3px 0}
 
+/* ---------- 聊天 ---------- */
+.chat-shell{display:flex;min-height:560px;border:1px solid var(--border);border-radius:12px;overflow:hidden;background:var(--panel)}
+.chat-sidebar{width:190px;flex:none;padding:10px;border-right:1px solid var(--border);background:var(--panel2)}
+.chat-sidebar>.btn{width:100%;justify-content:center;margin-bottom:10px}
+.chat-sessions{display:flex;flex-direction:column;gap:4px;max-height:510px;overflow:auto}
+.chat-session{border:1px solid transparent;background:transparent;text-align:left;padding:7px 8px;border-radius:7px;color:var(--muted);font-size:12.5px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chat-session:hover,.chat-session.active{background:var(--panel);border-color:var(--border);color:var(--text)}
+.chat-main{min-width:0;flex:1;display:flex;flex-direction:column}
+.chat-toolbar{padding:10px 12px;display:flex;gap:7px;align-items:center;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.chat-toolbar select{max-width:260px;padding:5px 9px}.chat-toolbar .hint{margin-left:auto}
+.chat-messages{flex:1;overflow:auto;padding:18px 10%;background:#fdfcf9}
+.chat-message{max-width:850px;margin:0 auto 16px;display:flex;flex-direction:column;gap:4px}
+.chat-message .role{font-size:11px;font-weight:700;color:var(--dim);text-transform:uppercase;letter-spacing:.04em}
+.chat-message .bubble{padding:10px 13px;border-radius:11px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.65;border:1px solid var(--border);background:var(--panel)}
+.chat-message.user .bubble{background:var(--accent-soft);border-color:#edcfbf}.chat-message.error .bubble{background:#f9ece9;border-color:#e5c4bd;color:var(--danger)}
+.chat-composer{border-top:1px solid var(--border);padding:10px 12px;background:var(--panel)}
+.chat-composer textarea{width:100%;resize:vertical;min-height:58px;max-height:240px;border:1px solid var(--border2);border-radius:9px;padding:9px 11px;font:13.5px/1.55 inherit;color:var(--text);background:#fff;outline:none}.chat-composer textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(217,119,87,.15)}
+.chat-actions{display:flex;align-items:center;gap:8px;margin-top:8px}
+@media(max-width:700px){.chat-shell{min-height:500px}.chat-sidebar{width:130px}.chat-messages{padding:14px}.chat-toolbar .hint{display:none}.chat-toolbar select{max-width:180px}}
+
 .empty{text-align:center;color:var(--dim);padding:34px 0;font-size:13.5px}
 .loading{color:var(--dim);text-align:center;padding:26px 0;font-size:13px}
 .loading::after{content:'';display:inline-block;width:14px;height:14px;margin-left:8px;vertical-align:-2px;
@@ -226,6 +246,7 @@ details.raw pre{margin-top:8px;font-size:12px;color:var(--muted);max-height:260p
   <button class="tab active" data-tab="installed">已安装 <span class="cnt" id="cntInstalled"></span></button>
   <button class="tab" data-tab="library">模型市场</button>
   <button class="tab" data-tab="running">运行中 <span class="cnt" id="cntRunning"></span></button>
+  <button class="tab" data-tab="chat">聊天</button>
   <button class="tab" data-tab="help">帮助</button>
 </nav>
 
@@ -276,6 +297,30 @@ details.raw pre{margin-top:8px;font-size:12px;color:var(--muted);max-height:260p
       <div class="spacer"></div><span class="hint">Ollama 会在空闲一段时间后自动卸载，也可手动立即卸载</span>
     </div>
     <div id="runList"><div class="loading">加载中</div></div>
+  </section>
+
+  <!-- 聊天 -->
+  <section class="pane" id="pane-chat">
+    <div class="chat-shell">
+      <aside class="chat-sidebar">
+        <button class="btn primary" id="chatNew">＋ 新建对话</button>
+        <div id="chatSessions" class="chat-sessions"></div>
+      </aside>
+      <div class="chat-main">
+        <div class="chat-toolbar">
+          <select id="chatModel" title="选择本地聊天模型"></select>
+          <button class="btn small ghost" id="chatRename">重命名</button>
+          <button class="btn small ghost" id="chatSettings">设置</button>
+          <button class="btn small danger" id="chatDelete">删除对话</button>
+          <span id="chatStats" class="hint"></span>
+        </div>
+        <div id="chatMessages" class="chat-messages"></div>
+        <div class="chat-composer">
+          <textarea id="chatInput" rows="3" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
+          <div class="chat-actions"><span id="chatStatus" class="hint"></span><div class="spacer"></div><button class="btn danger hidden" id="chatStop">停止</button><button class="btn primary" id="chatSend">发送 ↵</button></div>
+        </div>
+      </div>
+    </div>
   </section>
 
   <!-- 帮助 -->

@@ -47,7 +47,10 @@ async function ollamaOp(op, body) {
   if (!def) throw new Error('不允许的 Ollama 操作');
   const r = await fetch(OLLAMA + def.path, { method: def.method, headers: body ? { 'Content-Type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(15_000) });
   let j = {}; try { j = await r.json(); } catch {}
-  if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+  if (!r.ok) {
+    if (r.status === 403) throw new Error('Ollama 拒绝浏览器扩展访问（HTTP 403）。请运行项目根目录的 enable_extension_cors.bat，然后完全退出并重开 Ollama。');
+    throw new Error(j.error || `HTTP ${r.status}`);
+  }
   return j;
 }
 
@@ -80,6 +83,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 });
 
 chrome.runtime.onConnect.addListener((port) => {
+  if (port.name === 'chat') return handleChatPort(port);
   if (port.name !== 'pull') return;
   const ac = new AbortController(); let started = false; let finished = false;
   const finish = (payload) => { if (!finished) { finished = true; try { port.postMessage({ type: 'end', ...payload }); } catch {} } };
@@ -89,7 +93,7 @@ chrome.runtime.onConnect.addListener((port) => {
     started = true;
     try {
       const r = await fetch(OLLAMA + '/api/pull', { method: 'POST', signal: ac.signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: m.model, name: m.model, stream: true }) });
-      if (!r.ok) { let j = {}; try { j = await r.json(); } catch {} throw new Error(j.error || `HTTP ${r.status}`); }
+      if (!r.ok) { let j = {}; try { j = await r.json(); } catch {} if (r.status === 403) throw new Error('Ollama 拒绝浏览器扩展访问（HTTP 403）。请运行 enable_extension_cors.bat 后完全退出并重开 Ollama。'); throw new Error(j.error || `HTTP ${r.status}`); }
       const reader = r.body.getReader(), dec = new TextDecoder(); let buf = '';
       while (true) {
         const { done, value } = await reader.read(); if (done) break;
@@ -104,3 +108,28 @@ chrome.runtime.onConnect.addListener((port) => {
   });
   port.onDisconnect.addListener(() => ac.abort());
 });
+
+function handleChatPort(port) {
+  const ac=new AbortController(); let started=false,finished=false;
+  const finish=(payload)=>{if(!finished){finished=true;try{port.postMessage({type:'end',...payload})}catch{}}};
+  port.onMessage.addListener(async(m)=>{
+    if(m.type==='cancel'){ac.abort();return}
+    if(started||!m.payload)return; started=true;
+    try{
+      const p=m.payload, model=String(p.model||'').trim();
+      const messages=Array.isArray(p.messages)?p.messages:[];
+      if(!model||model.length>256)throw new Error('无效的聊天模型');
+      if(!messages.length||messages.length>101)throw new Error('消息数量无效');
+      const clean=messages.map(x=>({role:String(x.role||''),content:String(x.content||'')}));
+      if(clean.some(x=>!['system','user','assistant'].includes(x.role)||x.content.length>20000))throw new Error('消息内容无效或过长');
+      const body={model,messages:clean,stream:true,keep_alive:p.keep_alive||'5m'};
+      if(Number.isFinite(p.options?.temperature))body.options={temperature:Math.min(2,Math.max(0,Number(p.options.temperature)))};
+      const r=await fetch(OLLAMA+'/api/chat',{method:'POST',signal:ac.signal,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if(!r.ok){let j={};try{j=await r.json()}catch{}if(r.status===403)throw new Error('Ollama 拒绝浏览器扩展访问（HTTP 403）。请运行 enable_extension_cors.bat 后完全退出并重开 Ollama。');throw new Error(j.error||`HTTP ${r.status}`)}
+      const reader=r.body.getReader(),dec=new TextDecoder();let buf='';
+      while(true){const {done,value}=await reader.read();if(done)break;buf+=dec.decode(value,{stream:true});let i;while((i=buf.indexOf('\n'))>=0){const raw=buf.slice(0,i).trim();buf=buf.slice(i+1);if(raw){const line=JSON.parse(raw);if(line.error)throw new Error(line.error);port.postMessage({type:'chunk',line})}}}
+      finish({error:null});
+    }catch(e){finish(ac.signal.aborted?{cancelled:true}:{error:e.message||String(e)})}
+  });
+  port.onDisconnect.addListener(()=>ac.abort());
+}

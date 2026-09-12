@@ -43,6 +43,17 @@ const NodeBackend = {
     if(!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
     return j;
   },
+  chat(payload, {onLine, onEnd}){
+    const ctrl = new AbortController();
+    (async()=>{try{
+      const res=await fetch('/ollama/api/chat?stream=1',{method:'POST',signal:ctrl.signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({...payload,stream:true})});
+      if(!res.ok){let j={};try{j=await res.json()}catch{}throw new Error(j.error||`HTTP ${res.status}`)}
+      const reader=res.body.getReader(),dec=new TextDecoder();let buf='';
+      while(true){const {done,value}=await reader.read();if(done)break;buf+=dec.decode(value,{stream:true});let i;while((i=buf.indexOf('\n'))>=0){const raw=buf.slice(0,i).trim();buf=buf.slice(i+1);if(raw){const ev=JSON.parse(raw);if(ev.error)throw new Error(ev.error);onLine(ev)}}}
+      onEnd(null);
+    }catch(e){onEnd(e.name==='AbortError'?{cancelled:true}:e)}})();
+    return {cancel(){ctrl.abort()}};
+  },
   pull(model, {onLine, onEnd}){
     const ctrl = new AbortController();
     (async () => {
@@ -95,6 +106,12 @@ const ExtBackend = {
     if (r && (r.__error || r.error)) throw new Error(r.error);
     return r;
   },
+  chat(payload,{onLine,onEnd}){
+    const port=chrome.runtime.connect({name:'chat'});let terminal=false;
+    port.onMessage.addListener(m=>{if(m.type==='chunk')onLine(m.line);else if(m.type==='end'){terminal=true;onEnd(m.cancelled?{cancelled:true}:(m.error?new Error(m.error):null))}});
+    port.onDisconnect.addListener(()=>{if(!terminal)onEnd(new Error(chrome.runtime.lastError?.message||'聊天连接已断开'))});
+    port.postMessage({payload});return {cancel(){try{port.postMessage({type:'cancel'})}catch{}}};
+  },
   pull(model, {onLine, onEnd}){
     const port = chrome.runtime.connect({name:'pull'});
     let terminal = false;
@@ -133,6 +150,18 @@ function toast(msg, type=''){
 async function copyText(s){
   try{ await navigator.clipboard.writeText(s); toast('已复制：'+s, 'ok'); }
   catch{ toast('复制失败，请手动复制：'+s, 'err'); }
+}
+function normRef(v){ return String(v||'').trim().toLowerCase(); }
+function parentRef(v){ const s=normRef(v), slash=s.lastIndexOf('/'), colon=s.lastIndexOf(':'); return colon>slash?s.slice(0,colon):s; }
+function refsOf(m){ return new Set([m?.name,m?.model].map(normRef).filter(Boolean)); }
+function localVariants(parent){ return state.models.filter(m=>[...refsOf(m)].some(r=>parentRef(r)===parentRef(parent))); }
+function tagInstallStatus(tag){
+  const target=normRef(tag.model), parent=parentRef(target);
+  const exact=state.models.find(m=>refsOf(m).has(target));
+  if(exact) return {kind:'exact',local:exact};
+  const prefix=normRef(tag.digest);
+  const equivalent=prefix.length>=12&&state.models.find(m=>[...refsOf(m)].some(r=>parentRef(r)===parent)&&normRef(m.digest).startsWith(prefix));
+  return equivalent?{kind:'equivalent',local:equivalent}:{kind:'none'};
 }
 
 /* ================= 运行压力估算 ================= */
@@ -294,6 +323,7 @@ function confirmDelete(name){
     try{
       await B.ollama('/api/delete', 'DELETE', {model:name, name});
       toast(`已删除 ${name}`, 'ok');
+      state.libCache.clear();
       closeModal(); loadInstalled();
     }catch(e){ toast('删除失败：'+e.message, 'err'); $('#btnDoDel').disabled=false; }
   };
@@ -356,11 +386,12 @@ function renderCard(it){
   const meta = [
     it.pulls && `⬇ ${esc(it.pulls)}`, it.tagCount && `${esc(it.tagCount)} 个版本`, it.updated && `${esc(it.updated)}更新`,
   ].filter(Boolean).join(' · ');
-  const installed = state.models.some(m=>m.name===it.name || m.name.startsWith(it.name+':'));
+  const installed = localVariants(it.name);
+  const installLabel = installed.length ? `<span class="badge" style="color:var(--ok);border-color:#c9dcc0" title="${esc(installed.map(m=>m.name).join(', '))}">已安装 ${installed.length} 个版本</span>` : '';
   return `<div class="card" data-name="${esc(it.name)}">
     <div class="card-head">
       <div class="c-main">
-        <div class="c-title">${esc(it.name)} ${chips} ${installed?'<span class="badge" style="color:var(--ok);border-color:#c9dcc0">已安装</span>':''}</div>
+        <div class="c-title">${esc(it.name)} ${chips} ${installLabel}</div>
         <div class="c-desc">${esc(it.description)}</div>
       </div>
       <div class="c-meta">${meta}</div>
@@ -402,22 +433,26 @@ async function loadCardDetail(name, det){
   try{
     const r = await B.model(name);
     const quick = r.variants.map(v=>{
-      const full = name+':'+v;
-      const sizeRow = r.tags.find(t=>t.model===full);
-      return `<button class="vchip" data-model="${esc(full)}" title="拉取 ${esc(full)}">${esc(v)}${sizeRow?pressureDot(sizeRow.size):''}</button>`;
+      const tag = r.tags.find(t=>normRef(t.tag)===normRef(v));
+      const full = tag?.model || name+':'+v;
+      const status = tag ? tagInstallStatus(tag) : {kind:'none'};
+      const label = status.kind==='exact' ? '已安装' : status.kind==='equivalent' ? '同内容已安装' : esc(v);
+      const title = status.kind==='exact' ? `已安装：${status.local.name}` : status.kind==='equivalent' ? `同内容已安装为 ${status.local.name}；仍可拉取此标签` : `拉取 ${full}`;
+      return `<button class="vchip ${status.kind==='exact'?'installed':''}" ${status.kind==='exact'?'disabled':''} data-model="${esc(full)}" title="${esc(title)}">${label}${tag?pressureDot(tag.size):''}</button>`;
     }).join('');
-    const rows = r.tags.map(t=>`<tr>
-      <td class="tname">${esc(t.tag)}</td><td>${esc(t.size)}</td><td>${esc(t.context)}</td>
-      <td style="white-space:nowrap">${pressureHTML(t.size)}</td>
-      <td>${esc(t.input)}</td><td>${esc(t.updated)}</td>
-      <td style="white-space:nowrap">
-        <button class="btn small primary" data-tag-act="${esc(t.model)}" data-cmd="pull" ${calcPressure(t.size)&&calcPressure(t.size).level===2?'title="提示：本机基本无法运行此版本"':''}>拉取</button>
-        <button class="btn small ghost" data-tag-act="${esc(t.model)}" data-cmd="copy" title="复制拉取命令">⧉</button>
-      </td></tr>`).join('');
+    const rows = r.tags.map(t=>{
+      const status=tagInstallStatus(t);
+      const stateLabel=status.kind==='exact'?'<span class="badge" style="color:var(--ok);border-color:#c9dcc0">已安装</span>':status.kind==='equivalent'?`<span class="badge" title="本地：${esc(status.local.name)}">同内容已安装</span>`:'';
+      const action=status.kind==='exact'?'<button class="btn small" disabled>已安装</button>':`<button class="btn small primary" data-tag-act="${esc(t.model)}" data-cmd="pull" ${calcPressure(t.size)&&calcPressure(t.size).level===2?'title="提示：本机基本无法运行此版本"':''}>拉取</button>`;
+      return `<tr><td class="tname">${esc(t.tag)}</td><td>${esc(t.size)}</td><td>${esc(t.context)}</td>
+      <td style="white-space:nowrap">${pressureHTML(t.size)}</td><td>${stateLabel}</td>
+      <td>${esc(t.input)}</td><td>${esc(t.updated)}</td><td style="white-space:nowrap">${action}
+        <button class="btn small ghost" data-tag-act="${esc(t.model)}" data-cmd="copy" title="复制拉取命令">⧉</button></td></tr>`;
+    }).join('');
     let html = '';
     if(quick) html += `<div class="quick"><span class="lbl">快捷拉取（圆点=本机压力）：</span>${quick}</div>`;
     html += `<table class="tag-table">
-      <tr><th>版本 Tag</th><th>大小</th><th>上下文</th><th>本机压力</th><th>输入</th><th>更新</th><th></th></tr>${rows}</table>`;
+      <tr><th>版本 Tag</th><th>大小</th><th>上下文</th><th>本机压力</th><th>本地状态</th><th>输入</th><th>更新</th><th></th></tr>${rows}</table>`;
     state.libCache.set(key, html);
     det.innerHTML = html;
   }catch(e){
@@ -501,7 +536,7 @@ function startPull(model){
       task.done = true; task.doneAt = Date.now();
       renderPulls();
       if(task.cancelled){ toast(`已取消 ${model}`); loadInstalled(); }
-      else if(!task.error){ toast(`「${model}」下载完成`, 'ok'); loadInstalled(); loadRunning(); }
+      else if(!task.error){ toast(`「${model}」下载完成`, 'ok'); state.libCache.clear(); loadInstalled(); loadRunning(); }
     },
   });
 }
@@ -522,8 +557,7 @@ function renderPulls(){
     const indet = (!t.done && !t.error && t.pct===0);
     parts.push(`<div class="pull-item ${t.done&&!t.error?'done':''} ${t.error?'err':''}">
       <div class="p-top"><span class="p-name">${esc(t.model)}</span>
-        ${t.done ? ((t.error || t.cancelled)?'<button class="p-x" data-remove="1" title="移除">✕</button>' : '<span style="color:var(--ok)">✓</span>')
-                 : '<button class="p-x" data-cancel="1" title="取消下载">✕</button>'}
+        ${t.done ? (t.error?'<span style="color:var(--danger)">!</span>':'<span style="color:var(--ok)">✓</span>') : ''}
       </div>
       <div class="p-status">${status}</div>
       <div class="p-bar"><i class="${indet?'indet':''}" style="${indet?'':'width:'+t.pct.toFixed(1)+'%'}"></i></div>
@@ -532,16 +566,6 @@ function renderPulls(){
   list.innerHTML = parts.join('');
 }
 
-$('#pullList').addEventListener('click', e=>{
-  const item = e.target.closest('.pull-item'); if(!item) return;
-  const name = item.querySelector('.p-name').textContent;
-  const t = pulls.get(name); if(!t) return;
-  if(e.target.dataset.cancel){
-    openModal(`<h3>取消下载？</h3><p style="color:var(--muted)">将中断 <b style="font-family:var(--mono);color:var(--text)">${esc(name)}</b> 的下载。Ollama 会自行处理未完成的临时数据；官方 API 不提供安全的“删除半拉取文件”操作。</p><div class="modal-actions"><button class="btn" data-close>继续下载</button><button class="btn danger" id="confirmCancelPull">取消下载</button></div>`);
-    $('#confirmCancelPull').addEventListener('click', ()=>{ t.cancelling=true; t.status='取消中…'; renderPulls(); closeModal(); if(t.handle) t.handle.cancel(); });
-  }
-  if(e.target.dataset.remove){ pulls.delete(name); renderPulls(); }
-});
 $('#clearDone').onclick = ()=>{
   for(const [k,t] of pulls) if(t.done) pulls.delete(k);
   renderPulls();
@@ -600,6 +624,49 @@ $('#runList').addEventListener('click', async e=>{
   setTimeout(loadRunning, 800);
 });
 
+/* ================= 本地聊天 ================= */
+const CHAT_KEY='oh_chat_v1';
+const chat={sessions:[],active:null,handle:null,streaming:false};
+function chatLoad(){try{const d=JSON.parse(localStorage.getItem(CHAT_KEY)||'{}');chat.sessions=Array.isArray(d.sessions)?d.sessions.slice(0,30):[];chat.active=d.active||chat.sessions[0]?.id||null}catch{chat.sessions=[];chat.active=null}}
+function chatSave(){localStorage.setItem(CHAT_KEY,JSON.stringify({active:chat.active,sessions:chat.sessions.slice(0,30)}))}
+function chatSession(){return chat.sessions.find(s=>s.id===chat.active)}
+function eligibleModels(){return state.models.filter(m=>{const d=m.details||{},c=(m.capabilities||d.capabilities||[]).map(x=>String(x).toLowerCase());return !c.includes('embedding')})}
+function newChat(){const models=eligibleModels();const s={id:crypto.randomUUID(),title:'新对话',model:models[0]?.name||'',system:'',temperature:.7,messages:[],createdAt:Date.now(),updatedAt:Date.now()};chat.sessions.unshift(s);chat.active=s.id;chatSave();renderChat()}
+function renderChat(){
+  const box=$('#chatSessions'),session=chatSession(),models=eligibleModels();
+  if(!session&&models.length)newChat();
+  box.innerHTML=chat.sessions.map(s=>`<button class="chat-session ${s.id===chat.active?'active':''}" data-chat-session="${esc(s.id)}" title="${esc(s.title)}">${esc(s.title)}</button>`).join('')||'<div class="empty">暂无对话</div>';
+  const select=$('#chatModel');select.innerHTML=models.map(m=>`<option value="${esc(m.name)}">${esc(m.name)}</option>`).join('');
+  if(session&&models.some(m=>m.name===session.model))select.value=session.model;
+  const out=$('#chatMessages');out.replaceChildren();
+  if(!models.length){const e=document.createElement('div');e.className='empty';e.textContent='没有可聊天的本地模型。Embedding 向量模型不能用于对话，请到模型市场安装聊天模型。';out.append(e);$('#chatSend').disabled=true;return}
+  $('#chatSend').disabled=chat.streaming;$('#chatInput').disabled=chat.streaming;$('#chatStop').classList.toggle('hidden',!chat.streaming);
+  (session?.messages||[]).forEach(m=>appendChatMessage(m.role,m.content,m.error));
+  if(!session?.messages?.length){const e=document.createElement('div');e.className='empty';e.textContent='开始一段本地对话。聊天记录仅保存在此浏览器。';out.append(e)}
+  out.scrollTop=out.scrollHeight;
+}
+function appendChatMessage(role,content,error=false){const out=$('#chatMessages');const empty=out.querySelector('.empty');if(empty)empty.remove();const wrap=document.createElement('div');wrap.className=`chat-message ${role}${error?' error':''}`;const r=document.createElement('div');r.className='role';r.textContent=role==='user'?'你':role==='assistant'?'助手':'系统';const b=document.createElement('div');b.className='bubble';b.textContent=content||'';wrap.append(r,b);out.append(wrap);out.scrollTop=out.scrollHeight;return b}
+function updateChatTitle(s){const first=s.messages.find(m=>m.role==='user')?.content||'新对话';s.title=first.replace(/\s+/g,' ').slice(0,24);s.updatedAt=Date.now()}
+async function sendChat(){
+  const s=chatSession(),text=$('#chatInput').value.trim();if(!s||!text||chat.streaming)return;
+  const model=$('#chatModel').value;if(!model)return toast('请选择聊天模型','err');
+  s.model=model;s.messages.push({role:'user',content:text,createdAt:Date.now()});$('#chatInput').value='';updateChatTitle(s);chat.streaming=true;renderChat();
+  const assistant={role:'assistant',content:'',createdAt:Date.now()};s.messages.push(assistant);const bubble=appendChatMessage('assistant','');
+  const msgs=[];if(s.system.trim())msgs.push({role:'system',content:s.system.trim()});msgs.push(...s.messages.filter(m=>m!==assistant).slice(-100).map(m=>({role:m.role,content:m.content})));
+  $('#chatStatus').textContent='正在生成…';let final={};
+  chat.handle=B.chat({model,messages:msgs,keep_alive:'5m',options:{temperature:Number(s.temperature)||.7}},{onLine:ev=>{assistant.content+=ev.message?.content||'';bubble.textContent=assistant.content;final=ev;if(ev.done){const sec=(ev.eval_duration||0)/1e9;const t=ev.eval_count&&sec?`${(ev.eval_count/sec).toFixed(1)} tok/s`:'';$('#chatStats').textContent=t}},onEnd:result=>{chat.streaming=false;chat.handle=null;if(result?.cancelled){assistant.content+=assistant.content?'\n\n[已停止生成]':'[已停止生成]'}else if(result){assistant.error=true;assistant.content+=`\n\n[错误：${result.message||result}]`;$('#chatStatus').textContent='生成失败'}else $('#chatStatus').textContent='';updateChatTitle(s);chatSave();renderChat()}});
+}
+$('#chatSessions').addEventListener('click',e=>{const b=e.target.closest('[data-chat-session]');if(b){chat.active=b.dataset.chatSession;chatSave();renderChat()}});
+$('#chatNew').addEventListener('click',newChat);
+$('#chatModel').addEventListener('change',e=>{const s=chatSession();if(s){s.model=e.target.value;chatSave()}});
+$('#chatSend').addEventListener('click',sendChat);
+$('#chatInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendChat()}});
+$('#chatStop').addEventListener('click',()=>{if(chat.handle){chat.handle.cancel();$('#chatStatus').textContent='正在停止…'}});
+$('#chatRename').addEventListener('click',()=>{const s=chatSession();if(!s)return;const n=prompt('对话名称',s.title);if(n?.trim()){s.title=n.trim().slice(0,60);chatSave();renderChat()}});
+$('#chatDelete').addEventListener('click',()=>{const s=chatSession();if(!s||!confirm(`删除对话“${s.title}”？`))return;chat.sessions=chat.sessions.filter(x=>x.id!==s.id);chat.active=chat.sessions[0]?.id||null;chatSave();renderChat()});
+$('#chatSettings').addEventListener('click',()=>{const s=chatSession();if(!s)return;openModal(`<h3>对话设置</h3><label>系统提示词</label><textarea id="systemPrompt" rows="6" style="width:100%;margin-top:6px">${esc(s.system)}</textarea><label style="display:block;margin-top:12px">温度（0–2）</label><input id="chatTemp" type="number" min="0" max="2" step="0.1" value="${esc(s.temperature)}"><div class="modal-actions"><button class="btn" data-close>取消</button><button class="btn primary" id="saveChatSettings">保存</button></div>`);$('#saveChatSettings').addEventListener('click',()=>{s.system=$('#systemPrompt').value.slice(0,12000);s.temperature=Math.min(2,Math.max(0,Number($('#chatTemp').value)||.7));chatSave();closeModal()})});
+chatLoad();
+
 /* ================= 弹窗 / 选项卡 ================= */
 function openModal(html){ $('#modalBox').innerHTML = html; $('#modal').classList.remove('hidden'); }
 function closeModal(){ $('#modal').classList.add('hidden'); }
@@ -615,6 +682,7 @@ function switchTab(id){
 $$('.tab').forEach(t=>t.addEventListener('click', ()=>{
   switchTab(t.dataset.tab);
   if(t.dataset.tab==='running') loadRunning();
+  if(t.dataset.tab==='chat'){ loadInstalled().then(renderChat); }
   if(t.dataset.tab==='help') renderHwUI();
 }));
 $('#hwPill').onclick = ()=>switchTab('help');
