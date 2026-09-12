@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ollama 控制台</title>
+<style>
+:root{
+  --bg:#0b1020; --panel:#131c31; --panel2:#0e1626; --border:#23304e; --border2:#2d3c60;
+  --text:#e6ecf7; --muted:#8fa1c2; --dim:#5f7096;
+  --accent:#6d8dff; --accent2:#9a6dff; --ok:#3ddc97; --warn:#fbbf24; --danger:#f87171;
+  --chip-blue:rgba(109,141,255,.14); --chip-indigo:rgba(154,109,255,.16);
+  --mono:ui-monospace,SFMono-Regular,Consolas,"Courier New",monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:
+    radial-gradient(900px 400px at 85% -10%, rgba(109,141,255,.13), transparent 60%),
+    radial-gradient(700px 380px at -10% 110%, rgba(154,109,255,.10), transparent 60%),
+    var(--bg);
+  color:var(--text);
+  font:14px/1.6 system-ui,"Segoe UI","Microsoft YaHei",sans-serif;
+  padding-bottom:70px;
+}
+a{color:var(--accent);text-decoration:none}
+
+/* ---------- 顶栏 ---------- */
+header{
+  position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:14px;
+  padding:14px 26px;background:rgba(11,16,32,.82);backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--border);
+}
+.brand{font-size:18px;font-weight:700;letter-spacing:.5px;
+  background:linear-gradient(90deg,var(--accent),var(--accent2));
+  -webkit-background-clip:text;background-clip:text;color:transparent;}
+.pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:3px 10px;border-radius:99px;border:1px solid var(--border2);color:var(--muted)}
+.pill .dot{width:8px;height:8px;border-radius:50%;background:var(--dim)}
+.pill.on .dot{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+.pill.off .dot{background:var(--danger);box-shadow:0 0 8px var(--danger)}
+.spacer{flex:1}
+
+/* ---------- 通用控件 ---------- */
+.btn{
+  display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border2);
+  background:var(--panel);color:var(--text);border-radius:8px;padding:6px 14px;
+  font-size:13px;cursor:pointer;transition:.15s;white-space:nowrap;
+}
+.btn:hover{border-color:var(--accent);color:#fff;background:#18243f}
+.btn.primary{background:linear-gradient(90deg,var(--accent),var(--accent2));border:none;color:#fff;font-weight:600}
+.btn.primary:hover{filter:brightness(1.12)}
+.btn.ghost{background:transparent}
+.btn.danger{color:var(--danger);border-color:rgba(248,113,113,.4)}
+.btn.danger:hover{background:rgba(248,113,113,.12);border-color:var(--danger)}
+.btn.small{padding:3px 10px;font-size:12px;border-radius:7px}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+input[type=text],select{
+  background:var(--panel2);border:1px solid var(--border2);color:var(--text);
+  border-radius:9px;padding:8px 14px;font-size:13px;outline:none;transition:.15s;font-family:inherit;
+}
+input[type=text]:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(109,141,255,.18)}
+select{cursor:pointer}
+
+/* ---------- 选项卡 ---------- */
+nav{display:flex;gap:6px;padding:16px 26px 0;max-width:1060px;margin:0 auto}
+.tab{
+  border:1px solid transparent;background:transparent;color:var(--muted);
+  padding:8px 18px;border-radius:10px 10px 0 0;font-size:14px;cursor:pointer;transition:.15s;
+}
+.tab:hover{color:var(--text)}
+.tab.active{background:var(--panel);border-color:var(--border);border-bottom-color:var(--panel);color:#fff;font-weight:600}
+.tab .cnt{display:inline-block;min-width:18px;text-align:center;font-size:11px;background:var(--chip-blue);
+  border-radius:99px;padding:0 5px;margin-left:4px;color:var(--accent)}
+main{max-width:1060px;margin:0 auto;padding:0 26px 40px}
+.pane{display:none;background:var(--panel);border:1px solid var(--border);border-radius:0 14px 14px 14px;padding:20px}
+.pane.active{display:block}
+.pane-title{display:flex;align-items:center;gap:10px;margin-bottom:14px;color:var(--muted);font-size:13px;flex-wrap:wrap}
+.pane-title b{color:var(--text);font-size:15px}
+.hint{color:var(--dim);font-size:12.5px}
+
+/* ---------- 横幅 ---------- */
+.banner{
+  max-width:1060px;margin:12px auto 0;padding:10px 16px;border-radius:10px;font-size:13px;
+  border:1px solid rgba(251,191,36,.35);background:rgba(251,191,36,.08);color:var(--warn);
+  display:flex;align-items:center;gap:10px;
+}
+.hidden{display:none!important}
+
+/* ---------- 已安装列表 ---------- */
+.row{
+  display:flex;align-items:center;gap:14px;padding:13px 14px;border:1px solid var(--border);
+  border-radius:12px;background:var(--panel2);margin-bottom:10px;flex-wrap:wrap;transition:.15s;
+}
+.row:hover{border-color:var(--border2);transform:translateY(-1px)}
+.row-main{flex:1;min-width:220px}
+.m-name{font-family:var(--mono);font-weight:600;font-size:14.5px;word-break:break-all}
+.m-size{width:90px;text-align:right;font-family:var(--mono);color:var(--muted);font-size:13px}
+.m-date{width:100px;color:var(--dim);font-size:12.5px}
+.row-actions{display:flex;gap:8px}
+.badges{display:flex;gap:6px;margin-top:5px;flex-wrap:wrap}
+.badge{font-size:11px;padding:1px 8px;border-radius:99px;border:1px solid var(--border2);color:var(--muted)}
+.badge.b{color:var(--accent);border-color:rgba(109,141,255,.35);background:var(--chip-blue)}
+.badge.i{color:#b79bff;border-color:rgba(154,109,255,.35);background:var(--chip-indigo)}
+
+/* ---------- 模型市场 ---------- */
+.searchbar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
+.searchbar input[type=text]{flex:1;min-width:220px}
+.cards .card{border:1px solid var(--border);border-radius:12px;background:var(--panel2);margin-bottom:10px;overflow:hidden}
+.card-head{display:flex;gap:14px;align-items:flex-start;padding:14px 16px;cursor:pointer;transition:.15s}
+.card-head:hover{background:#15204033}
+.c-title{font-family:var(--mono);font-weight:600;font-size:15px;word-break:break-all;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.c-desc{color:var(--muted);font-size:13px;margin-top:4px;max-width:640px}
+.c-meta{margin-left:auto;text-align:right;color:var(--dim);font-size:12px;white-space:nowrap;line-height:1.9}
+.c-main{flex:1;min-width:200px}
+.card-detail{border-top:1px dashed var(--border);padding:14px 16px;background:#0c1322}
+.quick{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center}
+.quick .lbl{color:var(--dim);font-size:12px}
+.vchip{
+  font-family:var(--mono);font-size:12.5px;padding:3px 12px;border-radius:99px;cursor:pointer;transition:.15s;
+  border:1px solid rgba(109,141,255,.4);background:var(--chip-blue);color:var(--accent);
+}
+.vchip:hover{background:var(--accent);color:#fff}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{color:var(--dim);font-weight:500;text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);font-size:12px}
+td{padding:7px 8px;border-bottom:1px solid #1a2338;color:var(--muted);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+td.tname{font-family:var(--mono);color:var(--text)}
+.tag-table .btn{padding:2px 9px;font-size:12px}
+
+/* ---------- 运行中 ---------- */
+.proc{font-family:var(--mono);color:var(--ok);font-size:12px}
+
+/* ---------- 下载面板 ---------- */
+#pulls{
+  position:fixed;right:18px;bottom:18px;width:360px;max-width:calc(100vw - 36px);z-index:30;
+  background:var(--panel);border:1px solid var(--border2);border-radius:14px;
+  box-shadow:0 12px 40px rgba(0,0,0,.5);overflow:hidden;
+}
+#pulls .head{display:flex;align-items:center;padding:10px 14px;border-bottom:1px solid var(--border);font-size:13px;color:var(--muted)}
+#pullList{max-height:280px;overflow:auto}
+.pull-item{padding:10px 14px;border-bottom:1px solid #1a2338}
+.pull-item:last-child{border-bottom:none}
+.p-top{display:flex;align-items:center;gap:8px}
+.p-name{font-family:var(--mono);font-size:13px;font-weight:600;word-break:break-all}
+.p-x{margin-left:auto;border:none;background:none;color:var(--dim);cursor:pointer;font-size:14px;padding:0 4px;border-radius:6px}
+.p-x:hover{color:var(--danger)}
+.p-status{color:var(--muted);font-size:12px;margin:4px 0 6px;word-break:break-all}
+.p-bar{height:6px;border-radius:99px;background:#0a1120;overflow:hidden}
+.p-bar i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .3s;min-width:2%}
+.p-bar i.indet{width:100%;animation:pulse 1.2s ease-in-out infinite;background:linear-gradient(90deg,#2a3a63,#43538a)}
+@keyframes pulse{50%{opacity:.45}}
+.pull-item.done .p-status{color:var(--ok)}
+.pull-item.err .p-status{color:var(--danger)}
+
+/* ---------- 弹窗 ---------- */
+#modal{position:fixed;inset:0;z-index:40;background:rgba(4,8,18,.66);backdrop-filter:blur(4px);
+  display:flex;align-items:center;justify-content:center;padding:20px}
+.modal-box{background:var(--panel);border:1px solid var(--border2);border-radius:16px;max-width:680px;width:100%;
+  max-height:82vh;overflow:auto;padding:22px;box-shadow:0 20px 60px rgba(0,0,0,.55)}
+.modal-box h3{margin-bottom:14px;font-size:16px}
+.kv{width:100%;font-size:13px;margin-bottom:14px}
+.kv td{padding:6px 10px;border-bottom:1px solid #1a2338}
+.kv td:first-child{color:var(--dim);width:130px;white-space:nowrap}
+.kv td:last-child{color:var(--text);word-break:break-all}
+details.raw{margin-top:10px;border:1px solid var(--border);border-radius:10px;padding:8px 12px}
+details.raw summary{cursor:pointer;color:var(--muted);font-size:12.5px}
+details.raw pre{margin-top:8px;font-size:12px;color:var(--muted);max-height:260px;overflow:auto;white-space:pre-wrap;word-break:break-all}
+.modal-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:18px}
+
+/* ---------- Toast ---------- */
+#toasts{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:50;display:flex;flex-direction:column;gap:8px;align-items:center}
+.toast{padding:9px 18px;border-radius:10px;font-size:13px;color:#fff;
+  background:#1c2946;border:1px solid var(--border2);box-shadow:0 8px 24px rgba(0,0,0,.4);animation:tin .25s}
+.toast.ok{border-color:rgba(61,220,151,.5)}
+.toast.err{border-color:rgba(248,113,113,.5)}
+@keyframes tin{from{opacity:0;transform:translateY(8px)}}
+
+.empty{text-align:center;color:var(--dim);padding:34px 0;font-size:13.5px}
+.loading{color:var(--dim);text-align:center;padding:26px 0;font-size:13px}
+.loading::after{content:'';display:inline-block;width:14px;height:14px;margin-left:8px;vertical-align:-2px;
+  border:2px solid var(--border2);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">🦙 Ollama 控制台</div>
+  <span id="conn" class="pill"><span class="dot"></span><span id="connText">检测中…</span></span>
+  <span id="hostText" class="pill" style="cursor:default"></span>
+  <div class="spacer"></div>
+  <button class="btn small ghost" id="refreshAll" title="刷新全部数据">⟳ 刷新</button>
+</header>
+
+<div id="banner" class="banner hidden">
+  ⚠ 无法连接 Ollama 服务，请先启动 Ollama（桌面版或 <code>ollama serve</code>）。
+  <button class="btn small" id="retryConn" style="margin-left:auto">重试</button>
+</div>
+
+<nav>
+  <button class="tab active" data-tab="installed">已安装 <span class="cnt" id="cntInstalled"></span></button>
+  <button class="tab" data-tab="library">模型市场</button>
+  <button class="tab" data-tab="running">运行中 <span class="cnt" id="cntRunning"></span></button>
+</nav>
+
+<main>
+  <!-- 已安装 -->
+  <section class="pane active" id="pane-installed">
+    <div class="pane-title"><b>已安装模型</b><span id="installedSummary"></span>
+      <div class="spacer"></div><span class="hint">删除仅移除本地模型文件，可随时重新拉取</span>
+    </div>
+    <div id="installedList"><div class="loading">加载中</div></div>
+  </section>
+
+  <!-- 模型市场 -->
+  <section class="pane" id="pane-library">
+    <div class="searchbar">
+      <input type="text" id="q" placeholder="搜索模型：llama / qwen / deepseek / embedding …" style="flex:1">
+      <select id="sort"><option value="popular">热门</option><option value="newest">最新</option></select>
+      <button class="btn primary" id="btnSearch">🔍 搜索</button>
+    </div>
+    <div class="searchbar" style="margin-bottom:14px">
+      <input type="text" id="manualPull" placeholder="直接拉取：粘贴模型名（如 qwen3:4b）或完整命令（ollama pull qwen3:4b）" style="flex:1">
+      <button class="btn" id="btnManualPull">⬇ 拉取</button>
+    </div>
+    <div id="libList"><div class="loading">加载中</div></div>
+  </section>
+
+  <!-- 运行中 -->
+  <section class="pane" id="pane-running">
+    <div class="pane-title"><b>正在运行的模型</b><span id="runSummary"></span>
+      <div class="spacer"></div><span class="hint">Ollama 会在空闲一段时间后自动卸载，也可手动立即卸载</span>
+    </div>
+    <div id="runList"><div class="loading">加载中</div></div>
+  </section>
+</main>
+
+<!-- 下载任务面板 -->
+<div id="pulls" class="hidden">
+  <div class="head">⬇ 下载任务 <div class="spacer"></div>
+    <button class="btn small ghost" id="clearDone" style="border:none">清除已完成</button>
+  </div>
+  <div id="pullList"></div>
+</div>
+
+<div id="modal" class="hidden"><div class="modal-box" id="modalBox"></div></div>
+<div id="toasts"></div>
+
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+const state = { ok:false, models:[], running:[], lastQuery:'', libCache:new Map() };
+const pulls = new Map(); // model -> task
+
+/* ---------------- 工具 ---------------- */
+function fmtSize(n){
+  if(!n && n!==0) return '';
+  const u=['B','KB','MB','GB','TB']; let i=0;
+  while(n>=1024 && i<u.length-1){n/=1024;i++}
+  return (i===0?n:n.toFixed(1))+' '+u[i];
+}
+function fmtDate(iso){ try{ return new Date(iso).toLocaleString('zh-CN',{hour12:false}); }catch{ return iso||'' } }
+function toast(msg, type=''){
+  const t=document.createElement('div'); t.className='toast '+type; t.textContent=msg;
+  $('#toasts').appendChild(t);
+  setTimeout(()=>{t.style.opacity='0';t.style.transition='.3s';setTimeout(()=>t.remove(),300)}, 2600);
+}
+async function copyText(s){
+  try{ await navigator.clipboard.writeText(s); toast('已复制：'+s, 'ok'); }
+  catch{ toast('复制失败，请手动复制：'+s, 'err'); }
+}
+
+/* Ollama API（经本地代理） */
+async function ox(path, method='GET', body){
+  const r = await fetch('/ollama'+path, {
+    method,
+    headers: body ? {'Content-Type':'application/json'} : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let j = {};
+  try{ j = await r.json(); }catch{}
+  if(!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+  return j;
+}
+const api = {
+  tags: () => ox('/api/tags'),
+  ps:   () => ox('/api/ps'),
+  show: m => ox('/api/show', 'POST', {model:m, name:m}),
+  del:  m => ox('/api/delete', 'DELETE', {model:m, name:m}),
+  unload: m => ox('/api/generate', 'POST', {model:m, keep_alive:0}),
+};
+
+/* ---------------- 连接状态 ---------------- */
+async function checkStatus(){
+  try{
+    const s = await (await fetch('/api/status')).json();
+    const was = state.ok;
+    state.ok = s.ok;
+    const pill = $('#conn');
+    pill.className = 'pill ' + (s.ok ? 'on' : 'off');
+    $('#connText').textContent = s.ok ? `已连接 · v${s.version}` : '未连接';
+    $('#hostText').textContent = s.upstream || '';
+    $('#banner').classList.toggle('hidden', s.ok);
+    if(s.ok && !was){ loadInstalled(); loadRunning(); }
+  }catch{
+    state.ok=false; $('#banner').classList.remove('hidden');
+  }
+}
+
+/* ---------------- 已安装 ---------------- */
+async function loadInstalled(){
+  const box = $('#installedList');
+  try{
+    const j = await api.tags();
+    state.models = (j.models||[]).sort((a,b)=>(b.size||0)-(a.size||0));
+    $('#cntInstalled').textContent = state.models.length || '';
+    const total = state.models.reduce((s,m)=>s+(m.size||0),0);
+    $('#installedSummary').textContent = state.models.length ? `${state.models.length} 个 · 共 ${fmtSize(total)}` : '';
+    if(!state.models.length){
+      box.innerHTML = `<div class="empty">还没有安装任何模型<br><br>
+        <button class="btn primary" onclick="switchTab('library')">去模型市场逛逛 →</button></div>`;
+      return;
+    }
+    box.innerHTML = state.models.map(m=>{
+      const d = m.details||{}, caps = m.capabilities||d.capabilities||[];
+      const badges = [
+        d.parameter_size && `<span class="badge b">${esc(d.parameter_size)}</span>`,
+        d.quantization_level && `<span class="badge">${esc(d.quantization_level)}</span>`,
+        d.family && `<span class="badge">${esc(d.family)}</span>`,
+        ...caps.map(c=>`<span class="badge i">${esc(c)}</span>`),
+      ].filter(Boolean).join('');
+      return `<div class="row" data-name="${esc(m.name)}">
+        <div class="row-main">
+          <div class="m-name">${esc(m.name)}</div>
+          <div class="badges">${badges}</div>
+        </div>
+        <div class="m-size">${fmtSize(m.size)}</div>
+        <div class="m-date">${fmtDate(m.modified_at).split(' ')[0]}</div>
+        <div class="row-actions">
+          <button class="btn small ghost" data-act="detail">详情</button>
+          <button class="btn small ghost" data-act="copy" title="复制 ollama run 命令">⧉</button>
+          <button class="btn small danger" data-act="del">删除</button>
+        </div>
+      </div>`;
+    }).join('');
+  }catch(e){
+    box.innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`;
+  }
+}
+
+$('#installedList').addEventListener('click', e=>{
+  const btn = e.target.closest('[data-act]');
+  if(!btn) return;
+  const name = btn.closest('.row').dataset.name;
+  const act = btn.dataset.act;
+  if(act==='copy') return copyText(`ollama run ${name}`);
+  if(act==='del') return confirmDelete(name);
+  if(act==='detail') return showDetail(name);
+});
+
+function confirmDelete(name){
+  openModal(`<h3>删除模型</h3>
+    <p style="font-size:13.5px;color:var(--muted)">确定删除 <b style="font-family:var(--mono);color:var(--text)">${esc(name)}</b> 吗？
+    该操作会永久移除本地模型文件，释放磁盘空间（可随时重新拉取）。</p>
+    <div class="modal-actions">
+      <button class="btn" data-close>取消</button>
+      <button class="btn danger" id="btnDoDel">删除</button>
+    </div>`);
+  $('#btnDoDel').onclick = async ()=>{
+    $('#btnDoDel').disabled = true;
+    try{
+      await api.del(name);
+      toast(`已删除 ${name}`, 'ok');
+      closeModal(); loadInstalled();
+    }catch(e){ toast('删除失败：'+e.message, 'err'); $('#btnDoDel').disabled=false; }
+  };
+}
+
+async function showDetail(name){
+  openModal(`<h3>模型详情</h3><div class="loading">加载中</div>`);
+  try{
+    const j = await api.show(name);
+    const d = j.details||{}; const caps = j.capabilities||d.capabilities||[];
+    const kv = [
+      ['模型名称', name],
+      ['参数规模', d.parameter_size],
+      ['量化等级', d.quantization_level],
+      ['模型家族', d.families ? d.families.join(', ') : d.family],
+      ['上下文长度', d.context_length ? d.context_length.toLocaleString() : ''],
+      ['嵌入维度', d.embedding_length],
+      ['能力', caps.join(', ')],
+      ['格式', d.format],
+    ].filter(([,v])=>v!==undefined && v!==null && v!=='');
+    const local = state.models.find(m=>m.name===name);
+    if(local){ kv.unshift(['占用空间', fmtSize(local.size)], ['更新时间', fmtDate(local.modified_at)]); }
+    let html = `<h3 style="font-family:var(--mono)">${esc(name)}</h3>
+      <table class="kv">${kv.map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('')}</table>`;
+    for(const [title, val] of [['参数定义 Parameters', j.parameters], ['模板 Template', j.template], ['Modelfile', j.modelfile]]){
+      if(val) html += `<details class="raw"><summary>${title}</summary><pre>${esc(val)}</pre></details>`;
+    }
+    html += `<div class="modal-actions"><button class="btn" data-close>关闭</button></div>`;
+    $('#modalBox').innerHTML = html;
+  }catch(e){
+    $('#modalBox').innerHTML = `<h3>模型详情</h3><div class="empty">加载失败：${esc(e.message)}</div>
+      <div class="modal-actions"><button class="btn" data-close>关闭</button></div>`;
+  }
+}
+
+/* ---------------- 模型市场 ---------------- */
+async function loadLibrary(q=''){
+  const box = $('#libList');
+  state.lastQuery = q;
+  box.innerHTML = '<div class="loading">加载中</div>';
+  try{
+    const sort = $('#sort').value;
+    const r = await (await fetch(`/hub/search?q=${encodeURIComponent(q)}&sort=${sort}`)).json();
+    if(r.error) throw new Error(r.error);
+    if(!r.items.length){
+      box.innerHTML = `<div class="empty">${q?`没有找到与「${esc(q)}」相关的模型`:'暂无内容'}</div>`;
+      return;
+    }
+    box.innerHTML = r.items.map(renderCard).join('');
+  }catch(e){
+    box.innerHTML = `<div class="empty">加载模型库失败：${esc(e.message)}<br><br>仍可通过上方输入框直接拉取模型</div>`;
+  }
+}
+
+function renderCard(it){
+  const chips = [
+    ...it.capabilities.map(c=>`<span class="badge i">${esc(c)}</span>`),
+    ...it.variants.map(v=>`<span class="badge b">${esc(v)}</span>`),
+  ].join('');
+  const meta = [
+    it.pulls && `⬇ ${esc(it.pulls)}`, it.tagCount && `${esc(it.tagCount)} 个版本`, it.updated && `${esc(it.updated)}更新`,
+  ].filter(Boolean).join(' · ');
+  const installed = state.models.some(m=>m.name===it.name || m.name.startsWith(it.name+':'));
+  return `<div class="card" data-name="${esc(it.name)}">
+    <div class="card-head">
+      <div class="c-main">
+        <div class="c-title">${esc(it.name)} ${chips} ${installed?'<span class="badge" style="color:var(--ok);border-color:rgba(61,220,151,.4)">已安装</span>':''}</div>
+        <div class="c-desc">${esc(it.description)}</div>
+      </div>
+      <div class="c-meta">${meta}</div>
+      <button class="btn small" data-toggle>版本▾</button>
+    </div>
+    <div class="card-detail hidden"></div>
+  </div>`;
+}
+
+$('#libList').addEventListener('click', async e=>{
+  const card = e.target.closest('.card'); if(!card) return;
+  const name = card.dataset.name;
+
+  const vchip = e.target.closest('[data-model]');   // 快捷变体拉取
+  if(vchip) return startPull(vchip.dataset.model);
+
+  const act = e.target.closest('[data-tag-act]');   // 版本表内按钮
+  if(act){
+    const model = act.dataset.tagAct;
+    if(act.dataset.cmd==='pull') return startPull(model);
+    return copyText(`ollama pull ${model}`);
+  }
+
+  const btn = e.target.closest('[data-toggle]');    // 展开/收起
+  if(btn){
+    const det = card.querySelector('.card-detail');
+    if(det.classList.contains('hidden')){
+      det.classList.remove('hidden'); btn.textContent='版本▴';
+      if(!det.dataset.loaded) await loadCardDetail(name, det);
+    }else{ det.classList.add('hidden'); btn.textContent='版本▾'; }
+  }
+});
+
+async function loadCardDetail(name, det){
+  det.dataset.loaded = '1';
+  det.innerHTML = '<div class="loading">获取版本列表</div>';
+  if(state.libCache.has(name)){
+    det.innerHTML = state.libCache.get(name); return;
+  }
+  try{
+    const r = await (await fetch('/hub/model/'+encodeURIComponent(name))).json();
+    if(r.error) throw new Error(r.error);
+    const quick = r.variants.map(v=>
+      `<button class="vchip" data-model="${esc(name+':'+v)}" title="拉取 ${esc(name+':'+v)}">${esc(v)}</button>`).join('');
+    const rows = r.tags.map(t=>`<tr>
+      <td class="tname">${esc(t.tag)}</td><td>${esc(t.size)}</td><td>${esc(t.context)}</td>
+      <td>${esc(t.input)}</td><td>${esc(t.updated)}</td>
+      <td style="white-space:nowrap">
+        <button class="btn small primary" data-tag-act="${esc(t.model)}" data-cmd="pull">拉取</button>
+        <button class="btn small ghost" data-tag-act="${esc(t.model)}" data-cmd="copy" title="复制拉取命令">⧉</button>
+      </td></tr>`).join('');
+    let html = '';
+    if(quick) html += `<div class="quick"><span class="lbl">快捷拉取：</span>${quick}</div>`;
+    html += `<table class="tag-table">
+      <tr><th>版本 Tag</th><th>大小</th><th>上下文</th><th>输入</th><th>更新</th><th></th></tr>${rows}</table>`;
+    state.libCache.set(name, html);
+    det.innerHTML = html;
+  }catch(e){
+    det.dataset.loaded='';
+    det.innerHTML = `<div class="empty">获取版本失败：${esc(e.message)}<br>
+      <button class="btn small primary" data-model="${esc(name)}" style="margin-top:8px">直接拉取 ${esc(name)}</button></div>`;
+  }
+}
+
+$('#btnSearch').onclick = ()=>loadLibrary($('#q').value.trim());
+$('#q').addEventListener('keydown', e=>{ if(e.key==='Enter') loadLibrary($('#q').value.trim()); });
+$('#sort').addEventListener('change', ()=>{ if(!$('#q').value.trim()) loadLibrary(''); });
+$('#btnManualPull').onclick = manualPull;
+$('#manualPull').addEventListener('keydown', e=>{ if(e.key==='Enter') manualPull(); });
+function manualPull(){
+  let v = $('#manualPull').value.trim();
+  if(!v) return;
+  v = v.replace(/^ollama\s+pull\s+/i, '').replace(/\s+--.*$/, '').trim();
+  if(!v) return toast('请输入有效的模型名', 'err');
+  startPull(v);
+  $('#manualPull').value='';
+}
+
+/* ---------------- 下载任务 ---------------- */
+const PHASES = [
+  ['pulling manifest','拉取清单'], ['verifying','校验数据'], ['writing manifest','写入清单'],
+  ['success','完成'], ['canceling','取消中'],
+];
+const phaseText = s => {
+  for(const [k,v] of PHASES) if(String(s||'').includes(k)) return v;
+  return s;
+};
+
+async function startPull(model){
+  if(pulls.has(model)) return toast(`「${model}」已在下载队列中`);
+  const task = { model, ctrl:new AbortController(), done:false, error:'', status:'连接中…',
+                 pct:0, completed:0, total:0, speed:0, _lt:0, _lc:0 };
+  pulls.set(model, task);
+  renderPulls();
+  switchTab('installed');
+  try{
+    const res = await fetch('/ollama/api/pull?stream=1', {
+      method:'POST', signal:task.ctrl.signal,
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({model, name:model, stream:true}),
+    });
+    if(!res.ok){
+      let msg = `HTTP ${res.status}`;
+      try{ msg = (await res.json()).error || msg; }catch{}
+      throw new Error(msg);
+    }
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    let buf='';
+    while(true){
+      const {done, value} = await reader.read();
+      if(done) break;
+      buf += dec.decode(value, {stream:true});
+      let i;
+      while((i = buf.indexOf('\n')) >= 0){
+        const line = buf.slice(0, i).trim(); buf = buf.slice(i+1);
+        if(!line) continue;
+        let ev; try{ ev = JSON.parse(line); }catch{ continue; }
+        handlePullEvent(task, ev);
+        if(ev.error) throw new Error(ev.error);
+      }
+    }
+    if(!task.done){ task.status = '连接已结束'; task.done = true; }
+  }catch(e){
+    if(e.name === 'AbortError'){ task.error='已取消'; task.status='已取消'; }
+    else { task.error = e.message; task.status = '失败：'+e.message; }
+    task.done = true;
+  }
+  task.doneAt = Date.now();
+  renderPulls();
+  if(!task.error){ toast(`「${model}」下载完成`, 'ok'); loadInstalled(); loadRunning(); }
+}
+
+function handlePullEvent(task, ev){
+  task.status = ev.status || task.status;
+  if(ev.completed && ev.total){
+    const now = Date.now();
+    if(task._lt && ev.completed > task._lc){
+      const inst = (ev.completed - task._lc) / Math.max(0.001, (now - task._lt)/1000);
+      task.speed = task.speed ? task.speed*0.6 + inst*0.4 : inst;
+    }
+    task._lt = now; task._lc = ev.completed;
+    task.completed = ev.completed; task.total = ev.total;
+    task.pct = Math.min(100, ev.completed/ev.total*100);
+  }
+  if(ev.status === 'success'){ task.done = true; task.pct = 100; task.status='完成'; }
+  renderPulls();
+}
+
+function renderPulls(){
+  const list = $('#pullList'), panel = $('#pulls');
+  panel.classList.toggle('hidden', pulls.size===0);
+  const parts = [];
+  for(const t of pulls.values()){
+    let status, bar;
+    if(t.error) status = esc(t.status);
+    else if(t.done) status = '✓ 完成';
+    else if(t.pct > 0){
+      status = `下载中 ${t.pct.toFixed(0)}% · ${fmtSize(t.completed)} / ${fmtSize(t.total)}` + (t.speed>1024? ` · ${fmtSize(t.speed)}/s`:'');
+    } else status = esc(phaseText(t.status));
+    const indet = (!t.done && !t.error && t.pct===0);
+    parts.push(`<div class="pull-item ${t.done&&!t.error?'done':''} ${t.error?'err':''}">
+      <div class="p-top"><span class="p-name">${esc(t.model)}</span>
+        ${t.done ? (t.error?'<span class="p-x" data-remove="1" title="移除">✕</span>' : '<span style="color:var(--ok)">✓</span>')
+                 : '<button class="p-x" data-cancel="1" title="取消下载">✕</button>'}
+      </div>
+      <div class="p-status">${status}</div>
+      <div class="p-bar"><i class="${indet?'indet':''}" style="${indet?'':'width:'+t.pct.toFixed(1)+'%'}"></i></div>
+    </div>`);
+  }
+  list.innerHTML = parts.join('');
+}
+
+$('#pullList').addEventListener('click', e=>{
+  const item = e.target.closest('.pull-item'); if(!item) return;
+  const name = item.querySelector('.p-name').textContent;
+  const t = pulls.get(name); if(!t) return;
+  if(e.target.dataset.cancel){ t.ctrl.abort(); }
+  if(e.target.dataset.remove){ pulls.delete(name); renderPulls(); }
+});
+$('#clearDone').onclick = ()=>{
+  for(const [k,t] of pulls) if(t.done) pulls.delete(k);
+  renderPulls();
+};
+// 已完成任务 8 秒后自动淡出
+setInterval(()=>{
+  let dirty=false;
+  for(const [k,t] of pulls){
+    if(t.done && !t.error && t.doneAt && Date.now()-t.doneAt > 8000){ pulls.delete(k); dirty=true; }
+  }
+  if(dirty) renderPulls();
+}, 2000);
+
+/* ---------------- 运行中 ---------------- */
+async function loadRunning(){
+  const box = $('#runList');
+  try{
+    const j = await api.ps();
+    state.running = j.models||[];
+    $('#cntRunning').textContent = state.running.length || '';
+    $('#runSummary').textContent = state.running.length ? `${state.running.length} 个` : '';
+    if(!state.running.length){
+      box.innerHTML = '<div class="empty">当前没有加载到内存的模型。<br>对话或调用 API 时模型会自动加载。</div>';
+      return;
+    }
+    box.innerHTML = state.running.map(m=>{
+      const d = m.details||{};
+      const left = m.expires_at ? Math.max(0, new Date(m.expires_at) - Date.now()) : 0;
+      const leftTxt = left>0 ? `${Math.ceil(left/60000)} 分钟后自动卸载` : '即将卸载';
+      return `<div class="row" data-name="${esc(m.name)}">
+        <div class="row-main">
+          <div class="m-name">${esc(m.name)}</div>
+          <div class="badges">
+            ${d.parameter_size?`<span class="badge b">${esc(d.parameter_size)}</span>`:''}
+            <span class="badge">${fmtSize(m.size_vram)} 显存/内存</span>
+            <span class="badge">${leftTxt}</span>
+          </div>
+        </div>
+        <div class="proc">${esc(m.processor||'')}</div>
+        <div class="row-actions"><button class="btn small danger" data-unload="1">立即卸载</button></div>
+      </div>`;
+    }).join('');
+  }catch(e){
+    box.innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`;
+  }
+}
+$('#runList').addEventListener('click', async e=>{
+  const btn = e.target.closest('[data-unload]'); if(!btn) return;
+  const name = btn.closest('.row').dataset.name;
+  btn.disabled = true;
+  try{
+    await api.unload(name);
+    toast(`已请求卸载 ${name}`, 'ok');
+  }catch(err){
+    // 嵌入等模型不支持 generate，但 keep_alive:0 通常仍会触发卸载，稍后刷新验证
+    toast(`已发送卸载请求（${err.message}）`);
+  }
+  setTimeout(loadRunning, 800);
+});
+
+/* ---------------- 弹窗 / 选项卡 ---------------- */
+function openModal(html){ $('#modalBox').innerHTML = html; $('#modal').classList.remove('hidden'); }
+function closeModal(){ $('#modal').classList.add('hidden'); }
+$('#modal').addEventListener('click', e=>{
+  if(e.target.id==='modal' || e.target.closest('[data-close]')) closeModal();
+});
+document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeModal(); });
+
+function switchTab(id){
+  $$('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===id));
+  $$('.pane').forEach(p=>p.classList.toggle('active', p.id==='pane-'+id));
+}
+$$('.tab').forEach(t=>t.addEventListener('click', ()=>{
+  switchTab(t.dataset.tab);
+  if(t.dataset.tab==='running') loadRunning();
+}));
+
+$('#refreshAll').onclick = ()=>{ checkStatus(); loadInstalled(); loadRunning(); };
+$('#retryConn').onclick = checkStatus;
+
+/* ---------------- 启动 ---------------- */
+checkStatus();
+loadInstalled();
+loadRunning();
+loadLibrary('');
+setInterval(checkStatus, 30000);
+setInterval(loadRunning, 5000);
+</script>
+</body>
+</html>
