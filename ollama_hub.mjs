@@ -5,22 +5,27 @@
  * 零依赖，仅需 Node.js >= 18。
  * 功能：
  *   1. 提供本地网页 UI（public/index.html）
- *   2. 反向代理 Ollama REST API（127.0.0.1:11434），规避浏览器 CORS 限制，支持流式下载进度
+ *   2. 反向代理 Ollama REST API（默认 127.0.0.1:11434），规避浏览器 CORS 限制，支持流式下载进度
  *   3. 抓取并解析 ollama.com 的模型搜索 / 模型库 / 版本(tags) 页面，供 UI 浏览与搜索模型
+ *   4. 检测本机内存/显存，供 UI 估算各版本模型的本机运行压力
  *
  * 用法:
  *   node ollama_hub.mjs [--port 11435] [--no-open]
  * 环境变量:
  *   OLLAMA_HOST       Ollama 地址，默认 http://127.0.0.1:11434
- *   OLLAMA_HUB_PORT   监听端口，默认 11435（被占用时自动向后寻找可用端口）
+ *   OLLAMA_HUB_PORT   监听端口，默认 11435（被占用时若已有本工具实例则直接打开它，否则向后寻找）
  */
 import http from 'node:http';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { parseListPage, parseTagsPage } from './lib/site-parser.mjs';
 
+const execFileP = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const UPSTREAM = (process.env.OLLAMA_HOST || 'http://127.0.0.1:11434').replace(/\/+$/, '');
@@ -48,19 +53,7 @@ function send(res, code, body, headers = {}) {
 }
 const sendJSON = (res, code, obj) => send(res, code, JSON.stringify(obj));
 
-function decodeEntities(s) {
-  return s
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#0*39;|&#x0*27;/g, "'")
-    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(+d));
-}
-const stripTags = (s) => s.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-
-// ------------------------- ollama.com 抓取与解析 -------------------------
+// ------------------------- ollama.com 抓取 -------------------------
 const scrapeCache = new Map();
 async function scrapeSite(url) {
   const hit = scrapeCache.get(url);
@@ -72,67 +65,49 @@ async function scrapeSite(url) {
   if (!r.ok) throw new Error(`ollama.com 返回 HTTP ${r.status}`);
   const html = await r.text();
   scrapeCache.set(url, { t: Date.now(), html });
-  if (scrapeCache.size > 80) scrapeCache.delete(scrapeCache.keys().next().value); // 简单淘汰
+  if (scrapeCache.size > 80) scrapeCache.delete(scrapeCache.keys().next().value);
   return html;
 }
 
-/** 解析搜索页 / 模型库列表页中每个 <li> 结果卡片 */
-function parseListPage(html) {
-  const items = [];
-  const liRe = /<li[^>]*>\s*<a href="\/library\/([^"]+)"[\s\S]*?<\/li>/g;
-  let m;
-  while ((m = liRe.exec(html))) {
-    const name = decodeEntities(m[1]);
-    const block = m[0];
-    const desc = block.match(/<p class="max-w-lg[^"]*">([\s\S]*?)<\/p>/);
-    const caps = [...block.matchAll(/class="[^"]*bg-indigo-50[^"]*"[^>]*>([^<]+)<\/span>/g)].map((x) => x[1].trim());
-    const variants = [...block.matchAll(/class="[^"]*bg-\[#ddf4ff\][^"]*"[^>]*>([^<]+)<\/span>/g)].map((x) => x[1].trim());
-    const pulls = block.match(/<span[^>]*>([^<]+)<\/span>\s*<span class="hidden sm:flex">&nbsp;Pulls<\/span>/);
-    const tags = block.match(/<span[^>]*>([^<]+)<\/span>\s*<span class="hidden sm:flex">&nbsp;Tags<\/span>/);
-    const updated = block.match(/Updated(?:&nbsp;)?<\/span>\s*<span[^>]*>([^<]+)<\/span>/);
-    items.push({
-      name,
-      description: desc ? decodeEntities(stripTags(desc[1])) : '',
-      capabilities: caps,
-      variants,
-      pulls: pulls ? pulls[1].trim() : '',
-      tagCount: tags ? tags[1].trim() : '',
-      updated: updated ? updated[1].trim() : '',
-    });
-  }
-  return items;
-}
-
-/** 解析模型 tags 页（https://ollama.com/library/<name>/tags） */
-function parseTagsPage(html, name) {
-  const capabilities = [...html.matchAll(/class="[^"]*bg-indigo-50[^"]*"[^>]*>([^<]+)<\/span>/g)]
-    .slice(0, 12).map((x) => x[1].trim());
-  const variants = [...html.matchAll(/class="[^"]*bg-\[#ddf4ff\][^"]*"[^>]*>([^<]+)<\/span>/g)]
-    .slice(0, 30).map((x) => x[1].trim());
-  const tags = [];
-  const blocks = html.split(/<div class="group px-4 py-3">/).slice(1);
-  for (const b of blocks) {
-    const val = b.match(/<input class="command hidden" value="([^"]+)"/);
-    if (!val) continue;
-    const cols = [...b.matchAll(/<p class="col-span-2 text-neutral-500 text-\[13px\]">\s*([^<]*?)\s*<\/p>/g)].map((x) => x[1]);
-    const digest = b.match(/font-mono[^>]*>([0-9a-f]{12})</);
-    const updated = b.match(/·&nbsp;([^<]+)</);
-    const input = b.match(/<div class="col-span-2 text-neutral-500 text-\[13px\]\s*">([\s\S]*?)<\/div>/);
-    const full = decodeEntities(val[1]);
-    tags.push({
-      tag: full.startsWith(name + ':') ? full.slice(name.length + 1) : full,
-      model: full,
-      size: cols[0] || '',
-      context: cols[1] || '',
-      input: input ? stripTags(input[1]) : '',
-      digest: digest ? digest[1] : '',
-      updated: updated ? updated[1].trim() : '',
-    });
-  }
-  return { name, capabilities, variants, tags };
-}
-
 const encodeModelPath = (name) => name.split('/').map(encodeURIComponent).join('/');
+
+// ------------------------- 本机硬件检测 -------------------------
+let hwCache = null;
+async function detectHardware() {
+  if (hwCache && Date.now() - hwCache.t < 600_000) return hwCache.data;
+  const data = { ramGB: +(os.totalmem() / 2 ** 30).toFixed(1), vramGB: 0, gpus: [] };
+  try {
+    const { stdout } = await execFileP('nvidia-smi',
+      ['--query-gpu=name,memory.total', '--format=csv,noheader'], { timeout: 4000 });
+    for (const line of stdout.trim().split('\n')) {
+      const [name, mem] = line.split(',').map((s) => s.trim());
+      const mb = parseInt(String(mem || '').replace(/[^\d]/g, ''), 10);
+      if (!isNaN(mb)) { data.vramGB += mb / 1024; data.gpus.push(name); }
+    }
+  } catch { /* 无 NVIDIA 卡或驱动未装 */ }
+  if (!data.vramGB) {
+    try {
+      const { stdout } = await execFileP('wmic',
+        ['path', 'win32_VideoController', 'get', 'Name,AdapterRAM', '/format:list'], { timeout: 4000 });
+      let name = '', ramB = 0, has = false;
+      const flush = () => {
+        if (has && name && ramB > 2 ** 30) {
+          data.vramGB += ramB / 2 ** 30; data.gpus.push(name);
+        }
+        name = ''; ramB = 0; has = false;
+      };
+      for (const line of stdout.split('\n')) {
+        const [k, v] = line.trim().split('=');
+        if (k === 'Name') { flush(); name = v; has = true; }
+        else if (k === 'AdapterRAM') ramB = parseInt(v, 10) || 0;
+      }
+      flush();
+    } catch { /* wmic 不可用 */ }
+  }
+  data.vramGB = +data.vramGB.toFixed(1);
+  hwCache = { t: Date.now(), data };
+  return data;
+}
 
 // ------------------------- Ollama API 代理 -------------------------
 async function proxyOllama(req, res) {
@@ -204,22 +179,42 @@ async function handleRequest(req, res) {
         }
       }
 
+      // 本机硬件（供运行压力估算）
+      if (p === '/api/hardware') {
+        return sendJSON(res, 200, await detectHardware());
+      }
+
       // 模型搜索 / 热门列表（数据源：ollama.com）
+      //  - 无 q 时浏览模型库：/library?sort=popular|newest（官网同款排序）
+      //  - 有 q 或带筛选时走 /search：排序参数为 o，能力筛选为可重复的 c
       if (p === '/hub/search') {
         const q = (u.searchParams.get('q') || '').trim();
         const sort = u.searchParams.get('sort') === 'newest' ? 'newest' : 'popular';
-        const url = q
-          ? `https://ollama.com/search?q=${encodeURIComponent(q)}`
-          : `https://ollama.com/library?sort=${sort}`;
+        const caps = (u.searchParams.get('caps') || '')
+          .split(',').map((s) => s.trim().toLowerCase())
+          .filter((s) => /^[a-z][a-z-]*$/.test(s)).slice(0, 8);
+        let url;
+        if (q || caps.length) {
+          const us = new URLSearchParams();
+          if (q) us.set('q', q);
+          for (const c of caps) us.append('c', c);
+          if (sort === 'newest') us.set('o', 'newest');
+          url = 'https://ollama.com/search' + (us.toString() ? '?' + us : '');
+        } else {
+          url = 'https://ollama.com/library?sort=' + sort;
+        }
         const items = parseListPage(await scrapeSite(url));
-        return sendJSON(res, 200, { query: q, sort, count: items.length, items });
+        return sendJSON(res, 200, { query: q, sort, caps, count: items.length, items });
       }
 
       // 模型版本(tags)详情（数据源：ollama.com）
       if (p.startsWith('/hub/model/')) {
         const name = decodeURIComponent(p.slice('/hub/model/'.length));
         if (!name) return sendJSON(res, 400, { error: '缺少模型名' });
-        const html = await scrapeSite(`https://ollama.com/library/${encodeModelPath(name)}/tags`);
+        const modelPath = name.includes('/')
+          ? `https://ollama.com/${encodeModelPath(name)}/tags`
+          : `https://ollama.com/library/${encodeModelPath(name)}/tags`;
+        const html = await scrapeSite(modelPath);
         const data = parseTagsPage(html, name);
         if (!data.tags.length) return sendJSON(res, 404, { error: `未找到模型 ${name} 的版本列表` });
         return sendJSON(res, 200, data);
@@ -232,15 +227,21 @@ async function handleRequest(req, res) {
 }
 
 // ------------------------- 启动 -------------------------
-function listen(port, tries = 10) {
+function listenOnce(port) {
   return new Promise((resolve, reject) => {
     const srv = http.createServer(handleRequest);
-    srv.once('error', (e) => {
-      if (e.code === 'EADDRINUSE' && tries > 0) resolve(listen(port + 1, tries - 1));
-      else reject(e);
-    });
+    srv.once('error', (e) => reject(e));
     srv.listen(port, '127.0.0.1', () => resolve(srv));
   });
+}
+
+/** 探测端口上是否已有本工具实例（区分 Ollama Hub 和无关程序） */
+async function isHubInstance(port) {
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/api/status`, { signal: AbortSignal.timeout(1500) });
+    const j = await r.json();
+    return j && typeof j.ok === 'boolean' && typeof j.upstream === 'string';
+  } catch { return false; }
 }
 
 function openBrowser(url) {
@@ -251,7 +252,24 @@ function openBrowser(url) {
   } catch { /* 打不开就算了，控制台里有地址 */ }
 }
 
-const srv = await listen(wantPort);
+let srv = null;
+for (let tries = 0; tries < 10; tries++) {
+  const port = wantPort + tries;
+  try {
+    srv = await listenOnce(port);
+    break;
+  } catch (e) {
+    if (e.code !== 'EADDRINUSE') throw e;
+    if (await isHubInstance(port)) {
+      console.log(`检测到 Ollama Hub 已在运行（端口 ${port}），直接为你打开页面。`);
+      if (autoOpen) openBrowser(`http://127.0.0.1:${port}`);
+      process.exit(0);
+    }
+    // 端口被无关程序占用，尝试下一个
+  }
+}
+if (!srv) throw new Error('连续 10 个端口均被占用');
+
 const { port } = srv.address();
 const url = `http://127.0.0.1:${port}`;
 console.log('┌─────────────────────────────────────────────┐');
@@ -260,5 +278,5 @@ console.log(`│  地址     ${url.padEnd(34)}│`);
 console.log(`│  Ollama  ${UPSTREAM.padEnd(34)}│`);
 console.log('│  停止服务：关闭本窗口 / Ctrl+C               │');
 console.log('└─────────────────────────────────────────────┘');
-if (autoOpen && port === wantPort) openBrowser(url); // 端口被顺延时大概率是旧实例在跑，不再自动开页
-else if (autoOpen) console.log('提示: 默认端口被占用，已自动换用上述地址（可能是已有一个实例在运行）');
+if (autoOpen) openBrowser(url);
+if (port !== wantPort) console.log(`提示: 默认端口 ${wantPort} 被占用，已改用 ${port}`);

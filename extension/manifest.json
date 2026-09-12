@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Ollama Hub",
+  "version": "1.0.0",
+  "description": "Ollama 可视化管理：搜索、安装、卸载本地模型，无需命令行",
+  "minimum_chrome_version": "116",
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "打开 Ollama Hub"
+  },
+  "host_permissions": [
+    "http://127.0.0.1:11434/*",
+    "https://ollama.com/*"
+  ]
+}
