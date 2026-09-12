@@ -71,18 +71,41 @@ async function scrapeSite(url) {
 
 const encodeModelPath = (name) => name.split('/').map(encodeURIComponent).join('/');
 
+const FEATURED_RECOMMENDATIONS = ['glm-5.3', 'glm-5.3-flash', 'deepseek-v4-flash'];
+function sortItems(items, sort) {
+  const age = (item) => item.updatedAt ? Date.parse(item.updatedAt) : 0;
+  const pulls = (item) => item.pullsCount || 0;
+  return [...items].sort((a, b) => {
+    if (sort === 'downloads') return pulls(b) - pulls(a) || age(b) - age(a);
+    if (sort === 'newest') return age(b) - age(a) || pulls(b) - pulls(a);
+    // 官网动态推荐流没有公开参数；以近期推荐置顶项 + 官网最新流作为可解释的本地推荐。
+    const ai = FEATURED_RECOMMENDATIONS.indexOf(a.name), bi = FEATURED_RECOMMENDATIONS.indexOf(b.name);
+    if (ai >= 0 || bi >= 0) return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+    return age(b) - age(a) || pulls(b) - pulls(a);
+  });
+}
+
+function applyListFilters(items, { source, updated, minPulls }) {
+  const now = Date.now();
+  const days = { '7d': 7, '30d': 30, '90d': 90, '1y': 366 }[updated];
+  return items.filter((item) => {
+    if (source && source !== 'all' && item.source !== source) return false;
+    if (minPulls && (item.pullsCount || 0) < minPulls) return false;
+    if (days && (!item.updatedAt || Date.parse(item.updatedAt) < now - days * 864e5)) return false;
+    return true;
+  });
+}
+
 // ------------------------- 本机硬件检测 -------------------------
-let hwCache = null;
 async function detectHardware() {
-  if (hwCache && Date.now() - hwCache.t < 600_000) return hwCache.data;
-  const data = { ramGB: +(os.totalmem() / 2 ** 30).toFixed(1), vramGB: 0, gpus: [] };
+  const data = { ramGB: +(os.totalmem() / 2 ** 30).toFixed(1), vramGB: 0, gpus: [], gpuDetails: [], detectedAt: new Date().toISOString() };
   try {
     const { stdout } = await execFileP('nvidia-smi',
       ['--query-gpu=name,memory.total', '--format=csv,noheader'], { timeout: 4000 });
     for (const line of stdout.trim().split('\n')) {
       const [name, mem] = line.split(',').map((s) => s.trim());
       const mb = parseInt(String(mem || '').replace(/[^\d]/g, ''), 10);
-      if (!isNaN(mb)) { data.vramGB += mb / 1024; data.gpus.push(name); }
+      if (!isNaN(mb)) { const vramGB = +(mb / 1024).toFixed(1); data.vramGB += vramGB; data.gpus.push(name); data.gpuDetails.push({ name, vramGB }); }
     }
   } catch { /* 无 NVIDIA 卡或驱动未装 */ }
   if (!data.vramGB) {
@@ -92,7 +115,8 @@ async function detectHardware() {
       let name = '', ramB = 0, has = false;
       const flush = () => {
         if (has && name && ramB > 2 ** 30) {
-          data.vramGB += ramB / 2 ** 30; data.gpus.push(name);
+          const vramGB = +(ramB / 2 ** 30).toFixed(1);
+          data.vramGB += vramGB; data.gpus.push(name); data.gpuDetails.push({ name, vramGB });
         }
         name = ''; ramB = 0; has = false;
       };
@@ -105,7 +129,7 @@ async function detectHardware() {
     } catch { /* wmic 不可用 */ }
   }
   data.vramGB = +data.vramGB.toFixed(1);
-  hwCache = { t: Date.now(), data };
+  data.maxSingleVramGB = Math.max(0, ...data.gpuDetails.map((gpu) => gpu.vramGB));
   return data;
 }
 
@@ -118,7 +142,11 @@ async function proxyOllama(req, res) {
   const body = chunks.length ? Buffer.concat(chunks) : undefined;
 
   const ac = new AbortController();
-  req.on('close', () => ac.abort());
+  let streamFinished = false;
+  const abortUpstream = () => { if (!ac.signal.aborted) ac.abort(); };
+  req.on('aborted', abortUpstream);
+  // POST body 已经读完后，客户端取消会发生在 response/socket，而不是 req.close。
+  res.on('close', () => { if (!streamFinished && !res.writableEnded) abortUpstream(); });
   try {
     const r = await fetch(target, {
       method: req.method,
@@ -134,9 +162,13 @@ async function proxyOllama(req, res) {
         'X-Accel-Buffering': 'no',
         Connection: 'close',
       });
-      Readable.fromWeb(r.body).on('error', () => res.end()).pipe(res);
+      const upstreamStream = Readable.fromWeb(r.body);
+      upstreamStream.on('error', () => { if (!res.writableEnded) res.end(); });
+      upstreamStream.on('end', () => { streamFinished = true; });
+      upstreamStream.pipe(res);
     } else {
       const buf = Buffer.from(await r.arrayBuffer());
+      streamFinished = true;
       send(res, r.status, buf, { 'Content-Type': r.headers.get('content-type') || 'application/json' });
     }
   } catch (e) {
@@ -160,6 +192,7 @@ async function handleRequest(req, res) {
         return send(res, 200, f, { 'Content-Type': 'text/html; charset=utf-8' });
       }
       if (p === '/favicon.ico') return send(res, 204, '', { 'Content-Type': 'image/x-icon' });
+      if (p === '/app.js') return send(res, 200, fs.readFileSync(path.join(PUBLIC_DIR, 'app.js')), { 'Content-Type': 'text/javascript; charset=utf-8' });
       if (p.startsWith('/public/')) {
         const file = path.normalize(path.join(PUBLIC_DIR, p.slice('/public/'.length)));
         if (!file.startsWith(PUBLIC_DIR)) return sendJSON(res, 403, { error: 'forbidden' });
@@ -189,10 +222,14 @@ async function handleRequest(req, res) {
       //  - 有 q 或带筛选时走 /search：排序参数为 o，能力筛选为可重复的 c
       if (p === '/hub/search') {
         const q = (u.searchParams.get('q') || '').trim();
-        const sort = u.searchParams.get('sort') === 'newest' ? 'newest' : 'popular';
-        const caps = (u.searchParams.get('caps') || '')
-          .split(',').map((s) => s.trim().toLowerCase())
+        const sort = ['recommended', 'newest', 'downloads'].includes(u.searchParams.get('sort')) ? u.searchParams.get('sort') : 'recommended';
+        const caps = (u.searchParams.get('caps') || '').split(',').map((s) => s.trim().toLowerCase())
           .filter((s) => /^[a-z][a-z-]*$/.test(s)).slice(0, 8);
+        const filters = {
+          source: ['all', 'official', 'community'].includes(u.searchParams.get('source')) ? u.searchParams.get('source') : 'all',
+          updated: ['7d', '30d', '90d', '1y'].includes(u.searchParams.get('updated')) ? u.searchParams.get('updated') : '',
+          minPulls: Math.max(0, Number(u.searchParams.get('minPulls')) || 0),
+        };
         let url;
         if (q || caps.length) {
           const us = new URLSearchParams();
@@ -201,10 +238,12 @@ async function handleRequest(req, res) {
           if (sort === 'newest') us.set('o', 'newest');
           url = 'https://ollama.com/search' + (us.toString() ? '?' + us : '');
         } else {
-          url = 'https://ollama.com/library?sort=' + sort;
+          // 推荐/最新都基于官网最新流；推荐再加入当前的近期精选置顶。
+          url = sort === 'downloads' ? 'https://ollama.com/library' : 'https://ollama.com/library?sort=newest';
         }
-        const items = parseListPage(await scrapeSite(url));
-        return sendJSON(res, 200, { query: q, sort, caps, count: items.length, items });
+        const scraped = parseListPage(await scrapeSite(url));
+        const items = sortItems(applyListFilters(scraped, filters), sort);
+        return sendJSON(res, 200, { query: q, sort, caps, filters, count: items.length, items });
       }
 
       // 模型版本(tags)详情（数据源：ollama.com）
@@ -245,11 +284,11 @@ async function isHubInstance(port) {
 }
 
 function openBrowser(url) {
-  try {
-    if (process.platform === 'win32') spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore' }).unref();
-    else if (process.platform === 'darwin') spawn('open', [url], { detached: true, stdio: 'ignore' }).unref();
-    else spawn('xdg-open', [url], { detached: true, stdio: 'ignore' }).unref();
-  } catch { /* 打不开就算了，控制台里有地址 */ }
+  const command = process.platform === 'win32' ? 'powershell.exe' : process.platform === 'darwin' ? 'open' : 'xdg-open';
+  const args = process.platform === 'win32' ? ['-NoProfile', '-Command', `Start-Process '${url}'`] : [url];
+  const child = spawn(command, args, { detached: true, stdio: 'ignore' });
+  child.on('error', () => console.error(`无法自动打开浏览器，请手动访问：${url}`));
+  child.unref();
 }
 
 let srv = null;
