@@ -27,10 +27,11 @@ export function parseRelativeTime(value, now = Date.now()) {
 }
 
 export function parseSizeBytes(value) {
-  const m = String(value || '').trim().match(/^([\d.]+)\s*(B|KB|MB|GB|TB)$/i);
-  if (!m) return null;
-  const n = Number(m[1]);
-  return Number.isFinite(n) ? Math.round(n * ({ B: 1, KB: 2 ** 10, MB: 2 ** 20, GB: 2 ** 30, TB: 2 ** 40 }[m[2].toUpperCase()])) : null;
+  const ms = [...String(value || '').matchAll(/([\d.]+)\s*(B|KB|MB|GB|TB)(?=[\s,;-]|$)/gi)];
+  if (!ms.length) return null;
+  const [, n, u] = ms[ms.length - 1]; // 区间大小取上限
+  const num = Number(n);
+  return Number.isFinite(num) ? Math.round(num * ({ B: 1, KB: 2 ** 10, MB: 2 ** 20, GB: 2 ** 30, TB: 2 ** 40 }[u.toUpperCase()])) : null;
 }
 
 const isModelPath = (href) => /^\/library\/[A-Za-z0-9._-]+$/.test(href) || /^\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(href);
@@ -71,7 +72,7 @@ export function parseTagsPage(html, name, now = Date.now()) {
   for (const b of html.split(/<div class="group px-4 py-3">/).slice(1)) {
     const val = b.match(/<input class="command hidden" value="([^"]+)"/);
     if (!val) continue;
-    const cols = [...b.matchAll(/<p class="col-span-2 text-neutral-500 text-\[13px\]">\s*([^<]*?)\s*<\/p>/g)].map((x) => x[1]);
+    const cols = [...b.matchAll(/<p\s+class="col-span-2 text-neutral-500 text-\[13px\]">\s*([^<]*?)\s*<\/p>/g)].map((x) => x[1]);
     const digest = b.match(/font-mono[^>]*>([0-9a-f]{12})</);
     const updated = b.match(/·&nbsp;([^<]+)</);
     const input = b.match(/<div class="col-span-2 text-neutral-500 text-\[13px\]\s*">([\s\S]*?)<\/div>/);

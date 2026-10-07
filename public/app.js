@@ -166,11 +166,12 @@ function tagInstallStatus(tag){
 
 /* ================= 运行压力估算 ================= */
 function parseSizeGB(s){
-  const m = String(s||'').match(/([\d.]+)\s*(TB|GB|MB)/i);
-  if(!m) return null;
-  let v = parseFloat(m[1]);
-  if(/mb/i.test(m[2])) v /= 1024;
-  else if(/tb/i.test(m[2])) v *= 1024;
+  const ms=[...String(s||'').matchAll(/([\d.]+)\s*(TB|GB|MB)/gi)];
+  if(!ms.length) return null;
+  const [,num,unit]=ms[ms.length-1]; // 区间大小取上限
+  let v=parseFloat(num);
+  if(/mb/i.test(unit)) v/=1024;
+  else if(/tb/i.test(unit)) v*=1024;
   return v;
 }
 function calcPressure(sizeStr){
@@ -442,7 +443,7 @@ async function loadCardDetail(name, det){
     }).join('');
     const rows = r.tags.map(t=>{
       const status=tagInstallStatus(t);
-      const stateLabel=status.kind==='exact'?'<span class="badge" style="color:var(--ok);border-color:#c9dcc0">已安装</span>':status.kind==='equivalent'?`<span class="badge" title="本地：${esc(status.local.name)}">同内容已安装</span>`:'';
+      const stateLabel=status.kind==='exact'?'<span class="badge" style="color:var(--ok);border-color:#c9dcc0">已安装</span>':status.kind==='equivalent'?`<span class="badge" title="本地：${esc(status.local.name)}">同内容已安装</span>`:'<span class="badge" style="opacity:.5">未安装</span>';
       const action=status.kind==='exact'?'<button class="btn small" disabled>已安装</button>':`<button class="btn small primary" data-tag-act="${esc(t.model)}" data-cmd="pull" ${calcPressure(t.size)&&calcPressure(t.size).level===2?'title="提示：本机基本无法运行此版本"':''}>拉取</button>`;
       return `<tr><td class="tname">${esc(t.tag)}</td><td>${esc(t.size)}</td><td>${esc(t.context)}</td>
       <td style="white-space:nowrap">${pressureHTML(t.size)}</td><td>${stateLabel}</td>
@@ -452,7 +453,7 @@ async function loadCardDetail(name, det){
     let html = '';
     if(quick) html += `<div class="quick"><span class="lbl">快捷拉取（圆点=本机压力）：</span>${quick}</div>`;
     html += `<table class="tag-table">
-      <tr><th>版本 Tag</th><th>大小</th><th>上下文</th><th>本机压力</th><th>本地状态</th><th>输入</th><th>更新</th><th></th></tr>${rows}</table>`;
+      <tr><th>版本 Tag</th><th>大小</th><th>上下文</th><th>本机压力</th><th>安装状态</th><th>输入</th><th>更新</th><th></th></tr>${rows}</table>`;
     state.libCache.set(key, html);
     det.innerHTML = html;
   }catch(e){
