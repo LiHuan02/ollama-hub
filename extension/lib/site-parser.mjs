@@ -34,16 +34,24 @@ export function parseSizeBytes(value) {
   return Number.isFinite(num) ? Math.round(num * ({ B: 1, KB: 2 ** 10, MB: 2 ** 20, GB: 2 ** 30, TB: 2 ** 40 }[u.toUpperCase()])) : null;
 }
 
+const KNOWN_CAPS = /^(tools|thinking|vision|embedding|cloud|audio)$/i;
+
 const isModelPath = (href) => /^\/library\/[A-Za-z0-9._-]+$/.test(href) || /^\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(href);
 
+/** 解析搜索页 / 模型库列表页中每个 <li> 结果卡片（兼容官网新旧两版卡片结构） */
 export function parseListPage(html, now = Date.now()) {
   const items = [];
-  const liRe = /<li[^>]*>\s*<a href="([^"]+)" class="group w-full[^"]*">([\s\S]*?)<\/li>/g;
+  const seen = new Set();
+  const push = (item) => {
+    if (item && item.name && !seen.has(item.name)) { seen.add(item.name); items.push(item); }
+  };
+
+  // 旧版卡片：<li ...><a href="..." class="group w-full ...">
+  const oldRe = /<li[^>]*>\s*<a href="([^"]+)" class="group w-full[^"]*">([\s\S]*?)<\/li>/g;
   let m;
-  while ((m = liRe.exec(html))) {
+  while ((m = oldRe.exec(html))) {
     const href = m[1];
     if (!isModelPath(href)) continue;
-    const source = href.startsWith('/library/') ? 'official' : 'community';
     const name = decodeEntities(href.replace(/^\/(?:library\/)?/, ''));
     const block = m[2];
     const desc = block.match(/<p class="max-w-lg[^"]*">([\s\S]*?)<\/p>/);
@@ -54,13 +62,40 @@ export function parseListPage(html, now = Date.now()) {
     const updated = block.match(/Updated(?:&nbsp;)?<\/span>\s*<span[^>]*>([^<]+)<\/span>/);
     const pullsRaw = pulls ? pulls[1].trim() : '';
     const updatedRaw = updated ? updated[1].trim() : '';
-    items.push({
-      name, href, source,
+    push({
+      name, href, source: href.startsWith('/library/') ? 'official' : 'community',
       description: desc ? decodeEntities(stripTags(desc[1])) : '',
       capabilities: caps, variants, pulls: pullsRaw, pullsRaw, pullsCount: parseCompactNumber(pullsRaw),
       tagCount: tags ? tags[1].trim() : '', updated: updatedRaw, updatedRaw,
       updatedAt: parseRelativeTime(updatedRaw, now), fetchedAt: new Date(now).toISOString(),
     });
+  }
+
+  // 新版卡片（2026 改版）：<li class="border-b ..."><a href="..." class="group flex ...">
+  if (!items.length) {
+    const newRe = /<li[^>]*>\s*<a href="([^"]+)" class="group flex[^"]*">([\s\S]*?)<\/li>/g;
+    while ((m = newRe.exec(html))) {
+      const href = m[1];
+      if (!isModelPath(href)) continue;
+      const block = m[2];
+      const nameM = block.match(/<h2[^>]*\btitle="([^"]+)"/);
+      const name = decodeEntities(nameM ? nameM[1] : href.replace(/^\/(?:library\/)?/, ''));
+      const desc = block.match(/<p class="mt-1[^"]*"[^>]*>([\s\S]*?)<\/p>/);
+      const variants = [...block.matchAll(/<span\s+class="font-medium text-black">([^<]+)<\/span>/g)].map((x) => x[1].trim());
+      const caps = [...block.matchAll(/<span\s+class="inline-flex items-center gap-1\.5">\s*<svg[\s\S]*?<\/svg>([^<]+)<\/span>/g)]
+        .map((x) => x[1].trim()).filter((t) => KNOWN_CAPS.test(t)).map((t) => t.toLowerCase());
+      const pullsTitle = block.match(/title="([\d,]+)\s*downloads"/);
+      const pullsInner = block.match(/<\/svg><span\s*>([^<]+)<\/span><\/span>/);
+      const pullsRaw = pullsInner ? pullsInner[1].trim() : (pullsTitle ? pullsTitle[1] : '');
+      const pullsCount = pullsTitle ? Number(pullsTitle[1].replace(/,/g, '')) : parseCompactNumber(pullsRaw);
+      push({
+        name, href, source: href.startsWith('/library/') ? 'official' : 'community',
+        description: desc ? decodeEntities(stripTags(desc[1])) : '',
+        capabilities: caps, variants, pulls: pullsRaw, pullsRaw, pullsCount,
+        tagCount: '', updated: '', updatedRaw: '',
+        updatedAt: null, fetchedAt: new Date(now).toISOString(),
+      });
+    }
   }
   return items;
 }

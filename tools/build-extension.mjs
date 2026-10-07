@@ -11,8 +11,16 @@ const jobs = [
   ['lib/site-parser.mjs', 'extension/lib/site-parser.mjs'],
 ];
 for (const [src, dst] of jobs) {
+  const from = path.join(root, src);
   const to = path.join(root, dst);
   fs.mkdirSync(path.dirname(to), { recursive: true });
-  fs.copyFileSync(path.join(root, src), to);
-  console.log(`✓ ${src} → ${dst}`);
+  fs.copyFileSync(from, to);
+  // 回读校验，防止副本与源不一致（旧版本曾因漏同步导致扩展带旧解析器发布）
+  const a = fs.readFileSync(from);
+  const b = fs.readFileSync(to);
+  if (!a.equals(b)) {
+    console.error(`✗ 同步校验失败：${dst} 与 ${src} 不一致`);
+    process.exit(1);
+  }
+  console.log(`✓ ${src} → ${dst} (${b.length} bytes)`);
 }
